@@ -1,0 +1,73 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+
+\title{double pendulum}
+\author{Kanish H R}
+\date{April 2026}
+
+\documentclass[tikz,border=10pt]{standalone}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usetikzlibrary{calc, patterns}
+
+\begin{document}
+\begin{tikzpicture}[>=stealth, thick]
+
+    % Parameters
+    \def\lOne{2.5}
+    \def\lTwo{2.0}
+    \def\tOne{30}
+    \def\tTwo{50}
+
+    % Coordinates
+    \coordinate (O)  at (0,0);
+    \coordinate (M1) at ({\lOne*sin(\tOne)}, {-\lOne*cos(\tOne)});
+    \coordinate (M2) at (
+        {\lOne*sin(\tOne) + \lTwo*sin(\tTwo)},
+        {-\lOne*cos(\tOne) - \lTwo*cos(\tTwo)}
+    );
+
+    % Wall
+    \fill[pattern=north east lines] (-0.5, 0.2) rectangle (0.5, 0.4);
+    \draw[thick] (-0.5, 0.2) -- (0.5, 0.2);
+
+    % Dashed vertical references
+    \draw[dashed, gray] (O)  -- (0, {-\lOne - \lTwo - 0.5}) node[below, gray] {ref};
+    \draw[dashed, gray] (M1) -- ++(0, {-\lTwo - 0.5});
+
+    % Rods
+    \draw[thick] (O)  -- (M1);
+    \draw[thick] (M1) -- (M2);
+
+    % Pivot
+    \filldraw[black] (O) circle (2pt);
+
+    % Masses
+    \filldraw[blue!70!black] (M1) circle (6pt);
+    \filldraw[red!70!black]  (M2) circle (6pt);
+
+    % Mass labels
+    \node[right=8pt] at (M1) {$m_1$};
+    \node[right=8pt] at (M2) {$m_2$};
+
+    % Length labels — l1 on first rod, l2 on second rod
+    \node[left=6pt] at ($(O)!0.5!(M1)$)  {$l_1$};
+    \node[left=6pt] at ($(M1)!0.5!(M2)$) {$l_2$};
+
+    % Theta1 arc — at origin O
+    \draw[->, red] (0, -0.7) arc[start angle=270, delta angle=\tOne, radius=0.7]
+        node[midway, below right] {$\theta_1$};
+
+    % Theta2 arc — at M1 (joint between rods)
+    \draw[->, blue] ($(M1) + (0, -0.7)$) arc[start angle=270, delta angle=\tTwo, radius=0.7]
+        node[midway, below right] {$\theta_2$};
+
+    % Position vectors from origin
+    \draw[->, gray!60!gray, thin] (O) -- (M1)
+        node[midway, right=10pt] {$\vec{x}_2$};
+    \draw[->, gray, thin] (O) -- (M2)
+        node[midway, left=10pt] {$\vec{x}_1$};
+
+\end{tikzpicture}
+\end{document}
+
