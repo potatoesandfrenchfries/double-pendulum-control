@@ -27,6 +27,8 @@ function doublependulum!(dx,x,p,t)
     ddtheta1 = (-C*E + B*F)/(A*E - B*D)
     ddtheta2 = (-A*F + C*D)/(A*E - B*D)
 
+    # TODO: Torque at base for control
+
     dx[1] = dtheta1
     dx[2] = dtheta2
     dx[3] = ddtheta1
