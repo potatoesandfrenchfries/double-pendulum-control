@@ -46,7 +46,7 @@ end
 
 # Control thingy
 
-no_control = (x, t) -> 0.0
+no_control(x, t) = 0.0
 
 
 # Linearisation 
@@ -83,12 +83,66 @@ x_down_up = [0.0, 0.0, 0.0, π, 0.0, 0.0]
 # Q penalises state error, R penalises control effort.
 # Larger Q[i,i] → faster correction of state i.
 # Larger R      → less aggressive control (less force used).
-# u = -K (x*)
+# u = -K (x-x*)
 # Ref notes for the clearer notes
 
 function make_lqr(A, B, Q, R, x_eq)
     K = lqr(A, B, Q, R)        # 1×6 gain matrix
     return (x, _) -> -dot(K, x - x_eq)
+end
+
+# Energy functions 
+function potential_energy(x, p)
+    _, _, theta1, theta2, _, _ = x
+    return -(p.m1 + p.m2)*p.g*p.l1*cos(theta1) - p.m2*p.g*p.l2*cos(theta2)
+end
+
+function kinetic_energy(x, p)
+    _, dr, theta1, theta2, dtheta1, dtheta2 = x
+    m1, m2, l1, l2 = p.m1, p.m2, p.l1, p.l2
+    T  = 0.5*(p.M + m1 + m2)*dr^2
+    T += 0.5*(m1 + m2)*l1^2*dtheta1^2
+    T += 0.5*m2*l2^2*dtheta2^2
+    T += (m1 + m2)*l1*cos(theta1)*dr*dtheta1
+    T += m2*l2*cos(theta2)*dr*dtheta2
+    T += m2*l1*l2*cos(theta2 - theta1)*dtheta1*dtheta2
+    return T
+end
+
+total_energy(x, p) = kinetic_energy(x, p) + potential_energy(x, p)
+
+# Model to use a swing up, and then switch to LQR near equilibrium
+
+
+# u = clamp(γ · ṙ · (E − E_ref), −u_max, u_max)
+
+# When E < E_ref: push with dr to add energy.
+# When E > E_ref: push against dr to decrease energy.
+# E_ref is the potential energy at the target equilibrium (zero velocity).
+
+function make_swingup(p::Parameters, x_eq::Vector{Float64}; gamma=10.0, u_max=20.0)
+    E_ref = potential_energy(x_eq, p)   # target energy (KE=0 at equilibrium)
+    return function (x, _)
+        E  = total_energy(x, p)
+        dr = x[2]
+        clamp(gamma * dr * (E - E_ref), -u_max, u_max)
+    end
+end
+
+# ---------------------------------------------------------------------------
+# Switching controller
+# ---------------------------------------------------------------------------
+# Use swing-up until within ε of the equilibrium, then hand off to LQR.
+# Angle differences are wrapped to [-π, π] before computing distance.
+
+function make_switching(swingup::Function, lqr_ctrl::Function,
+                        x_eq::Vector{Float64}; epsilon=0.1)
+    return function (x, t)
+        delta = x - x_eq
+        delta[3] = mod(delta[3] + π, 2π) - π   # wrap θ1 error
+        delta[4] = mod(delta[4] + π, 2π) - π   # wrap θ2 error
+        norm(delta) < epsilon ? lqr_ctrl(x, t) : swingup(x, t)
+    end
 end
 
 
@@ -102,28 +156,37 @@ end
 
 
 #-------------------------------------------------------------------------
-
 # Tests
-p_phys = Parameters(1.0, 1.0, 5.0, 1.0, 1.0, 9.81, no_control)
+#-------------------------------------------------------------------------
 
-# Q: penalise [r, ṙ, θ1, θ2, θ̇1, θ̇2] errors
-# R: penalise control effort
-Q = diagm([1.0, 1.0, 10.0, 10.0, 1.0, 1.0])
-R = [0.1;;]   # 1×1 matrix
+p_phys = Parameters(1.0, 1.0, 50.0, 1.0, 1.0, 9.81, no_control)
 
-# Linearise and compute LQR gains for each equilibrium
-A_uu, B_uu = linearise(p_phys, x_up_up)
-A_ud, B_ud = linearise(p_phys, x_up_down)
-A_du, B_du = linearise(p_phys, x_down_up)
+# Q weights: [r, ṙ, θ1, θ2, θ̇1, θ̇2]
+Q = diagm([1.0, 1.0, 100.0, 100.0, 10.0, 10.0])
+R = [0.1;;]
 
-ctrl_uu = make_lqr(A_uu, B_uu, Q, R, x_up_up)
-ctrl_ud = make_lqr(A_ud, B_ud, Q, R, x_up_down)
-ctrl_du = make_lqr(A_du, B_du, Q, R, x_down_up)
+# Start from hanging down with a tiny nudge
+x0 = [0.0, 0.0, 0.02, 0.02, 0.0, 0.0]
 
-# Simulate LQR stabilisation from small perturbation near both-up
-p_lqr = Parameters(p_phys.m1, p_phys.m2, p_phys.M, p_phys.l1, p_phys.l2, p_phys.g, ctrl_uu)
-x0    = x_up_up + [0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
-prob  = ODEProblem(doublependulum!, x0, (0.0, 10.0), p_lqr)
-sol   = solve(prob, Tsit5())
-println("LQR both-up: solved $(length(sol.t)) steps")
-println("Final state error: $(round.(sol.u[end] - x_up_up, digits=4))")
+for (label, x_eq) in [
+        ("both-up",  x_up_up),
+        ("up-down",  x_up_down),
+        ("down-up",  x_down_up),
+    ]
+
+    A, B     = linearise(p_phys, x_eq)
+    lqr_ctrl = make_lqr(A, B, Q, R, x_eq)
+    swingup  = make_swingup(p_phys, x_eq)
+    ctrl     = make_switching(swingup, lqr_ctrl, x_eq)
+
+    p_ctrl = Parameters(p_phys.m1, p_phys.m2, p_phys.M,
+                        p_phys.l1, p_phys.l2, p_phys.g, ctrl)
+
+    prob = ODEProblem(doublependulum!, x0, (0.0, 30.0), p_ctrl)
+    sol  = solve(prob, Tsit5(), abstol=1e-8, reltol=1e-8)
+
+    δ = sol.u[end] - x_eq
+    δ[3] = mod(δ[3] + π, 2π) - π
+    δ[4] = mod(δ[4] + π, 2π) - π
+    println("[$label]  steps=$(length(sol.t))  final error=$(round.(δ, digits=4))")
+end
