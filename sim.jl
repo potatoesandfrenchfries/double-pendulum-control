@@ -69,13 +69,27 @@ function make_combined(p::Parameters, U_opt, tf_opt, x_eq;
     end
 
     lqr_ctrl = (x, _) -> clamp(-dot(K, state_error(wrap(x), x_eq_w)) + wall(x[1]), -u_max, u_max)
+    
+    # Check if LQR gain is valid (non-zero); fallback to multiaxis damping if solver failed
+    has_lqr = maximum(abs.(K)) > sqrt(eps(Float64))
+    
+    # Fallback stabilizer: cart damping + angle feedback (since full LQR failed)
+    fallback_ctrl = function (x, _)
+        xw = wrap(x)
+        δ = state_error(xw, x_eq_w)
+        u_cart = -8.0*δ[1] - 6.0*δ[2]     # cart stabilization
+        u_angle = -12.0*δ[3] - 10.0*δ[4] - 2.0*δ[5] - 2.0*δ[6]  # angle & rate damping
+        clamp(u_cart + u_angle + wall(x[1]), -u_max, u_max)
+    end
+    
+    stabilize_ctrl = has_lqr ? lqr_ctrl : fallback_ctrl
 
     return function (x, t)
         xw   = wrap(x)
         δ    = state_error(xw, x_eq_w)
 
-        if norm(δ) < ε
-            return lqr_ctrl(x, t)
+        if t >= tf_opt || norm(δ) < ε
+            return stabilize_ctrl(x, t)
         end
 
         # Tracking: feedforward only + soft wall + saturation
