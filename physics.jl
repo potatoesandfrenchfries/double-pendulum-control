@@ -1,6 +1,7 @@
 using DifferentialEquations
 using LinearAlgebra
 using ForwardDiff
+using ControlSystems
 
 struct Parameters
     m1::Float64
@@ -11,7 +12,7 @@ struct Parameters
     g::Float64
     control::Function   # (x, t) -> u
 end
-
+# x = [r, dr, theta1, theta2, dtheta1, dtheta2]
 function doublependulum!(dx, x, p, t)
     r, dr, theta1, theta2, dtheta1, dtheta2 = x
     m1, m2, M, l1, l2, g = p.m1, p.m2, p.M, p.l1, p.l2, p.g
@@ -43,6 +44,11 @@ function doublependulum!(dx, x, p, t)
     dx[6] = ddtheta2
 end
 
+# Control thingy
+
+no_control = (x, t) -> 0.0
+
+
 # Linearisation 
 function linearise(p::Parameters, x_eq::Vector{Float64})
     # ForwardDiff requires a single array argument, so u is fixed here
@@ -60,8 +66,8 @@ function linearise(p::Parameters, x_eq::Vector{Float64})
         return dx
     end
     
-    #   A is the 6×6 Jacobian w.r.t. state
-    #   B is the 6×1 Jacobian w.r.t. input
+    #   A is the 6×6 Jacobian wrt state
+    #   B is the 6×1 Jacobian wrt input
     A = ForwardDiff.jacobian(F_state, x_eq)  
     B = ForwardDiff.jacobian(F_input, [0.0])  
 
@@ -73,18 +79,17 @@ x_up_up   = [0.0, 0.0, π, π, 0.0, 0.0]
 x_up_down = [0.0, 0.0, π, 0.0, 0.0, 0.0]
 x_down_up = [0.0, 0.0, 0.0, π, 0.0, 0.0]
 
-# Control stuff
+# LQR - Trying to minimise cost function
+# Q penalises state error, R penalises control effort.
+# Larger Q[i,i] → faster correction of state i.
+# Larger R      → less aggressive control (less force used).
+# u = -K (x*)
+# Ref notes for the clearer notes
 
-no_control(x, t)        = 0.0
-constant_force(x, t)    = 1.0
-
-
-
-
-
-
-
-
+function make_lqr(A, B, Q, R, x_eq)
+    K = lqr(A, B, Q, R)        # 1×6 gain matrix
+    return (x, _) -> -dot(K, x - x_eq)
+end
 
 
 
@@ -99,20 +104,26 @@ constant_force(x, t)    = 1.0
 #-------------------------------------------------------------------------
 
 # Tests
-p = Parameters(1.0, 1.0, 5.0, 1.0, 1.0, 9.81, no_control)
+p_phys = Parameters(1.0, 1.0, 5.0, 1.0, 1.0, 9.81, no_control)
 
-# Simulate uncontrolled from near both-up equilibrium
-x0    = [0.0, 0.0, π+0.1, π-0.1, 0.0, 0.0]
-timespan = (0.0, 10.0)
-prob  = ODEProblem(doublependulum!, x0, timespan, p)
+# Q: penalise [r, ṙ, θ1, θ2, θ̇1, θ̇2] errors
+# R: penalise control effort
+Q = diagm([1.0, 1.0, 10.0, 10.0, 1.0, 1.0])
+R = [0.1;;]   # 1×1 matrix
+
+# Linearise and compute LQR gains for each equilibrium
+A_uu, B_uu = linearise(p_phys, x_up_up)
+A_ud, B_ud = linearise(p_phys, x_up_down)
+A_du, B_du = linearise(p_phys, x_down_up)
+
+ctrl_uu = make_lqr(A_uu, B_uu, Q, R, x_up_up)
+ctrl_ud = make_lqr(A_ud, B_ud, Q, R, x_up_down)
+ctrl_du = make_lqr(A_du, B_du, Q, R, x_down_up)
+
+# Simulate LQR stabilisation from small perturbation near both-up
+p_lqr = Parameters(p_phys.m1, p_phys.m2, p_phys.M, p_phys.l1, p_phys.l2, p_phys.g, ctrl_uu)
+x0    = x_up_up + [0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
+prob  = ODEProblem(doublependulum!, x0, (0.0, 10.0), p_lqr)
 sol   = solve(prob, Tsit5())
-println("Solved $(length(sol.t)) steps, t_end = $(sol.t[end])")
-
-# Linearise around each equilibrium
-A_uu, B_uu = linearise(p, x_up_up)
-A_ud, B_ud = linearise(p, x_up_down)
-A_du, B_du = linearise(p, x_down_up)
-println("\nA matrix at both-up equilibrium:")
-display(A_uu)
-println("\nB matrix at both-up equilibrium:")
-display(B_uu)
+println("LQR both-up: solved $(length(sol.t)) steps")
+println("Final state error: $(round.(sol.u[end] - x_up_up, digits=4))")
