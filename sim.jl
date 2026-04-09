@@ -24,7 +24,7 @@ include("swingup_opt.jl")   # defines X, U, x_target after solving
 # Once within ε of the equilibrium, switch to pure LQR stabilisation.
 
 function make_combined(p::Parameters, U_opt, tf_opt, x_eq;
-                       ε=0.3, u_max=20.0, r_max=2.0, k_wall=50.0)
+                       ε=0.3, u_max=30.0, r_max=2.0, k_wall=50.0)
     N  = length(U_opt) + 1
     dt = tf_opt / (N - 1)
 
@@ -32,7 +32,12 @@ function make_combined(p::Parameters, U_opt, tf_opt, x_eq;
     Q_lqr = diagm([1.0, 1.0, 100.0, 100.0, 10.0, 10.0])
     R_lqr = [0.1;;]
     A, B = linearise(p, x_eq)
-    K    = lqr(A, B, Q_lqr, R_lqr)
+    K    = try
+        lqr(A, B, Q_lqr, R_lqr)
+    catch err
+        @warn "LQR solve failed; using feedforward tracking only" exception=(err, catch_backtrace())
+        zeros(1, 6)
+    end
 
     # Soft wall: spring-like force pushing cart back within [-r_max, r_max]
     # Applied on top of every control law to prevent runaway
@@ -40,6 +45,18 @@ function make_combined(p::Parameters, U_opt, tf_opt, x_eq;
 
     # Wrap raw state angles to [-π, π] before any control computation
     wrap(x) = [x[1], x[2], mod(x[3] + π, 2π) - π, mod(x[4] + π, 2π) - π, x[5], x[6]]
+
+    # Linearly interpolate the discrete optimizer control samples to avoid
+    # step changes in the force signal.
+    interp_input(t) = begin
+        τ = clamp(t / dt, 0.0, length(U_opt) - 1)
+        k = clamp(floor(Int, τ) + 1, 1, length(U_opt))
+        α = τ - (k - 1)
+        if k == length(U_opt)
+            return U_opt[end][1]
+        end
+        return (1 - α) * U_opt[k][1] + α * U_opt[k + 1][1]
+    end
 
     lqr_ctrl = (x, _) -> clamp(-dot(K, wrap(x) - x_eq) + wall(x[1]), -u_max, u_max)
 
@@ -52,8 +69,7 @@ function make_combined(p::Parameters, U_opt, tf_opt, x_eq;
         end
 
         # Tracking: feedforward only + soft wall + saturation
-        k    = clamp(floor(Int, t / dt) + 1, 1, length(U_opt))
-        u_ff = U_opt[k][1]
+        u_ff = interp_input(t)
         return clamp(u_ff + wall(x[1]), -u_max, u_max)
     end
 end
@@ -62,7 +78,7 @@ end
 # Simulate
 # ---------------------------------------------------------------------------
 
-tf_opt = 40.0   # must match tf used in swingup_opt.jl
+tf_opt = 36.0   # matches the selected successful trajectory from swingup_opt.jl
 x_eq   = collect(Float64, x_target)   # convert SVector → Vector
 
 p_phys = Parameters(m1_, m2_, M_, l1_, l2_, g_, no_control)

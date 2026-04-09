@@ -45,13 +45,13 @@ function RobotDynamics.dynamics(::DoublePendulumCart, x, u)
 end
 
 
-function make_swingup_problem(x0, x_target; N=401, tf=40.0, u_max=30.0)
+function make_swingup_problem(x0, x_target; N=401, tf=36.0, u_max=40.0)
     model = DoublePendulumCart()
     n, m  = state_dim(model), control_dim(model)
 
     Q  = Diagonal(@SVector fill(1e-2, n))
-    R  = Diagonal(@SVector fill(1e-1, m))
-    Qf = Diagonal(@SVector [1000., 1000., 100000., 100000., 10000., 10000.])
+    R  = Diagonal(@SVector fill(5e-2, m))
+    Qf = Diagonal(@SVector [2000., 2000., 150000., 150000., 15000., 15000.])
 
     x0_s = SVector{n}(x0)
     xf_s = SVector{n}(x_target)
