@@ -46,6 +46,16 @@ function make_combined(p::Parameters, U_opt, tf_opt, x_eq;
     # Wrap raw state angles to [-π, π] before any control computation
     wrap(x) = [x[1], x[2], mod(x[3] + π, 2π) - π, mod(x[4] + π, 2π) - π, x[5], x[6]]
 
+    # Compute state error with wrapped angular components.
+    state_error(x, x_ref) = begin
+        δ = copy(x) .- x_ref
+        δ[3] = mod(δ[3] + π, 2π) - π
+        δ[4] = mod(δ[4] + π, 2π) - π
+        δ
+    end
+
+    x_eq_w = wrap(x_eq)
+
     # Linearly interpolate the discrete optimizer control samples to avoid
     # step changes in the force signal.
     interp_input(t) = begin
@@ -58,11 +68,11 @@ function make_combined(p::Parameters, U_opt, tf_opt, x_eq;
         return (1 - α) * U_opt[k][1] + α * U_opt[k + 1][1]
     end
 
-    lqr_ctrl = (x, _) -> clamp(-dot(K, wrap(x) - x_eq) + wall(x[1]), -u_max, u_max)
+    lqr_ctrl = (x, _) -> clamp(-dot(K, state_error(wrap(x), x_eq_w)) + wall(x[1]), -u_max, u_max)
 
     return function (x, t)
         xw   = wrap(x)
-        δ    = xw - x_eq
+        δ    = state_error(xw, x_eq_w)
 
         if norm(δ) < ε
             return lqr_ctrl(x, t)
@@ -98,11 +108,17 @@ final_wrapped = [sol.u[end][1], sol.u[end][2],
                  mod(sol.u[end][3] + π, 2π) - π,
                  mod(sol.u[end][4] + π, 2π) - π,
                  sol.u[end][5], sol.u[end][6]]
-δ_final = final_wrapped - x_eq
+target_wrapped = [x_eq[1], x_eq[2],
+                  mod(x_eq[3] + π, 2π) - π,
+                  mod(x_eq[4] + π, 2π) - π,
+                  x_eq[5], x_eq[6]]
+δ_final = final_wrapped - target_wrapped
+δ_final[3] = mod(δ_final[3] + π, 2π) - π
+δ_final[4] = mod(δ_final[4] + π, 2π) - π
 
 println("\n--- Simulation complete ---")
 println("Steps:       ", length(sol.t))
 println("Final state: ", round.(final_wrapped, digits=4))
-println("Target:      ", round.(x_eq, digits=4))
+println("Target:      ", round.(target_wrapped, digits=4))
 println("Final error: ", round.(δ_final, digits=4))
 println("Converged:   ", norm(δ_final) < 0.05)

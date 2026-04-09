@@ -86,9 +86,14 @@ x_down_up = [0.0, 0.0, 0.0, π, 0.0, 0.0]
 # u = -K (x-x*)
 # Ref notes for the clearer notes
 
-function make_lqr(A, B, Q, R, x_eq)
+function make_lqr(A, B, Q, R, x_eq; u_max=30.0)
     K = lqr(A, B, Q, R)        # 1×6 gain matrix
-    return (x, _) -> -dot(K, x - x_eq)
+    return function (x, _)
+        delta = copy(x) .- x_eq
+        delta[3] = mod(delta[3] + π, 2π) - π
+        delta[4] = mod(delta[4] + π, 2π) - π
+        clamp(-dot(K, delta), -u_max, u_max)
+    end
 end
 
 # Energy functions 
@@ -120,12 +125,14 @@ total_energy(x, p) = kinetic_energy(x, p) + potential_energy(x, p)
 # When E > E_ref: push against dr to decrease energy.
 # E_ref is the potential energy at the target equilibrium (zero velocity).
 
-function make_swingup(p::Parameters, x_eq::Vector{Float64}; gamma=10.0, u_max=20.0)
+function make_swingup(p::Parameters, x_eq::Vector{Float64}; gamma=5.0, u_max=20.0, E_tol=1.0)
     E_ref = potential_energy(x_eq, p)   # target energy (KE=0 at equilibrium)
     return function (x, _)
         E  = total_energy(x, p)
         dr = x[2]
-        clamp(gamma * dr * (E - E_ref), -u_max, u_max)
+        ΔE = E - E_ref
+        gain = abs(ΔE) < E_tol ? 0.5 * gamma : gamma
+        clamp(gain * dr * ΔE, -u_max, u_max)
     end
 end
 
@@ -135,13 +142,37 @@ end
 # Use swing-up until within ε of the equilibrium, then hand off to LQR.
 # Angle differences are wrapped to [-π, π] before computing distance.
 
+function close_to_equilibrium(x, x_eq;
+                              θ_tol=0.15,
+                              ω_tol=0.5,
+                              r_tol=0.3,
+                              dr_tol=0.5)
+    delta = copy(x) .- x_eq
+    delta[3] = mod(delta[3] + π, 2π) - π
+    delta[4] = mod(delta[4] + π, 2π) - π
+
+    abs(delta[1]) < r_tol  &&
+    abs(delta[2]) < dr_tol &&
+    abs(delta[3]) < θ_tol  &&
+    abs(delta[4]) < θ_tol  &&
+    abs(delta[5]) < ω_tol  &&
+    abs(delta[6]) < ω_tol
+end
+
 function make_switching(swingup::Function, lqr_ctrl::Function,
-                        x_eq::Vector{Float64}; epsilon=0.1)
+                        x_eq::Vector{Float64};
+                        θ_tol=0.15, ω_tol=0.5, r_tol=0.3, dr_tol=0.5)
+    mode = Ref(:swingup)
+
     return function (x, t)
-        delta = x - x_eq
-        delta[3] = mod(delta[3] + π, 2π) - π   # wrap θ1 error
-        delta[4] = mod(delta[4] + π, 2π) - π   # wrap θ2 error
-        norm(delta) < epsilon ? lqr_ctrl(x, t) : swingup(x, t)
+        if mode[] == :swingup &&
+           close_to_equilibrium(x, x_eq;
+                                θ_tol=θ_tol, ω_tol=ω_tol,
+                                r_tol=r_tol, dr_tol=dr_tol)
+            mode[] = :lqr
+        end
+
+        return mode[] == :lqr ? lqr_ctrl(x, t) : swingup(x, t)
     end
 end
 
